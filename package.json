@@ -1,0 +1,60 @@
+{
+  "name": "@itookit/vfs-sync",
+  "version": "0.1.0",
+  "type": "module",
+  "main": "./src/index.ts",
+  "types": "./src/index.ts",
+  "exports": {
+    ".": {
+      "types": "./src/index.ts",
+      "import": "./src/index.ts",
+      "default": "./src/index.ts"
+    }
+  },
+  "scripts": {
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run",
+    "build": "tsup",
+    "prepublishOnly": "pnpm build"
+  },
+  "devDependencies": {
+    "typescript": "^5.9.3",
+    "vitest": "^3.2.4",
+    "tsup": "^8.5.1",
+    "@types/node": "^22.0.0"
+  },
+  "description": "Platform-independent file synchronization, three-way planning and recoverable operations.",
+  "module": "./src/index.ts",
+  "license": "MIT",
+  "author": "lizlok@gmail.com",
+  "packageManager": "pnpm@10.20.0",
+  "repository": {
+    "type": "git",
+    "url": "git+ssh://git@github.com/mushuanli/vfs-sync.git"
+  },
+  "bugs": {
+    "url": "https://github.com/mushuanli/vfs-sync/issues"
+  },
+  "homepage": "https://github.com/mushuanli/vfs-sync#readme",
+  "files": [
+    "dist"
+  ],
+  "publishConfig": {
+    "access": "public",
+    "main": "./dist/index.cjs",
+    "module": "./dist/index.js",
+    "types": "./dist/index.d.ts",
+    "exports": {
+      ".": {
+        "import": {
+          "types": "./dist/index.d.ts",
+          "default": "./dist/index.js"
+        },
+        "require": {
+          "types": "./dist/index.d.cts",
+          "default": "./dist/index.cjs"
+        }
+      }
+    }
+  }
+}
