@@ -1,4 +1,4 @@
-import type { CommandRemote, Coordinator, FilesManifest, FilePlan, Head, Scope, Snapshot, StateStore, FileAction } from './contracts';
+import type { CommandRemote, CoordinationGuard, Coordinator, FilesManifest, FilePlan, Head, Scope, Snapshot, StateStore, FileAction } from './contracts';
 import { assertSync, SyncError } from './errors';
 import { bindingToken, assertBinding, planFileSync, selected } from './planner';
 import { encodeManifest, sha256, canonical } from './encoding';
@@ -6,6 +6,7 @@ import { OperationManager } from './operations';
 import { resolveFileConflicts } from './resolve';
 import { discoverDatasets, type DiscoveryRemote } from './discovery';
 import { mergeText } from './text-merge';
+import { scopedStore } from './coordination';
 
 export interface FileRemote extends CommandRemote, DiscoveryRemote {
     project(projectId: string): Promise<{ lifecycleRevision: string; state: string }>;
@@ -18,6 +19,7 @@ export interface FileRemote extends CommandRemote, DiscoveryRemote {
     check(projectId: string, hashes: string[]): Promise<{ ready: string[] }>;
 }
 export interface FileLocal {
+    scoped?(guard: CoordinationGuard): FileLocal;
     capture(): Promise<{ scan: Snapshot; handle: unknown }>;
     cache(bytes: Uint8Array): Promise<string>;
     object(hash: string): Promise<Uint8Array>;
@@ -38,10 +40,19 @@ export class FileSync {
         this.operations = new OperationManager(store, remote, coordinator, newId);
         this.scope = structuredClone(scope);
     }
+    private exclusive<T>(key: string, action: (sync: FileSync) => Promise<T>): Promise<T> {
+        return this.coordinator.exclusive(key, guard => {
+            if (!guard) return action(this);
+            assertSync(this.local.scoped, 'COORDINATION_FENCING_UNAVAILABLE');
+            const sync = new FileSync(scopedStore(this.store, guard), this.local.scoped(guard),
+                this.remote, this.coordinator, this.newId, this.scope);
+            return action(sync);
+        });
+    }
     async preview(): Promise<StoredFilePlan> {
         const binding = (await this.store.read()).binding;
-        return this.coordinator.exclusive(binding.bindingId, async () => {
-            await this.operations.recover(); await this.recoverApply(); await this.acknowledge(); return this.capturePreview();
+        return this.exclusive(binding.bindingId, async sync => {
+            await sync.operations.recover(); await sync.recoverApply(); await sync.acknowledge(); return sync.capturePreview();
         });
     }
     private async capturePreview(): Promise<StoredFilePlan> {
@@ -65,32 +76,32 @@ export class FileSync {
     }
     async reconcileExpired(): Promise<StoredFilePlan> {
         const b = (await this.store.read()).binding;
-        return this.coordinator.exclusive(b.bindingId, async () => {
-            try { await this.operations.recover(); }
+        return this.exclusive(b.bindingId, async sync => {
+            try { await sync.operations.recover(); }
             catch (error) { if (!(error instanceof SyncError) || error.code !== 'RECONCILIATION_REQUIRED') throw error; }
-            const state = await this.store.read(); assertSync(state.pending?.terminalExpired, 'RECONCILIATION_REQUIRED');
-            const preview = await this.capturePreview();
+            const state = await sync.store.read(); assertSync(state.pending?.terminalExpired, 'RECONCILIATION_REQUIRED');
+            const preview = await sync.capturePreview();
             if (state.activePlanId) {
-                const old = await this.local.load(state.activePlanId);
-                if (old) { old.phase = 'abandoned'; await this.local.save(old); }
+                const old = await sync.local.load(state.activePlanId);
+                if (old) { old.phase = 'abandoned'; await sync.local.save(old); }
             }
-            await this.operations.acknowledgeExpiredReconciliation();
-            await this.store.update(s => ({ ...s, activePlanId: undefined })); return preview;
+            await sync.operations.acknowledgeExpiredReconciliation();
+            await sync.store.update(s => ({ ...s, activePlanId: undefined })); return preview;
         });
     }
     async resolve(id: string, decisions: Record<string, 'local' | 'remote'>): Promise<StoredFilePlan> {
         const b = (await this.store.read()).binding;
-        return this.coordinator.exclusive(b.bindingId, async () => {
-            const stored = await this.local.load(id); assertSync(stored?.phase === 'prepared', 'PLAN_INACTIVE');
-            const state = await this.store.read(); assertBinding(stored.bindingToken, state.binding);
-        assertSync(stored.scopeToken === canonical(this.scope), 'PLAN_SCOPE_CHANGED');
-            const resolved = { ...stored, id: this.newId(), plan: resolveFileConflicts(stored.plan, decisions, state.binding.direction) };
-            await this.local.save(resolved); return resolved;
+        return this.exclusive(b.bindingId, async sync => {
+            const stored = await sync.local.load(id); assertSync(stored?.phase === 'prepared', 'PLAN_INACTIVE');
+            const state = await sync.store.read(); assertBinding(stored.bindingToken, state.binding);
+            assertSync(stored.scopeToken === canonical(sync.scope), 'PLAN_SCOPE_CHANGED');
+            const resolved = { ...stored, id: sync.newId(), plan: resolveFileConflicts(stored.plan, decisions, state.binding.direction) };
+            await sync.local.save(resolved); return resolved;
         });
     }
     async execute(id: string): Promise<FilePlan> {
         const binding = (await this.store.read()).binding;
-        return this.coordinator.exclusive(binding.bindingId, () => this.executeUnlocked(id));
+        return this.exclusive(binding.bindingId, sync => sync.executeUnlocked(id));
     }
     private async executeUnlocked(id: string): Promise<FilePlan> {
         const stored = await this.local.load(id); assertSync(stored, 'PLAN_NOT_FOUND');
@@ -118,9 +129,9 @@ export class FileSync {
     }
     async recover(): Promise<void> {
         const binding = (await this.store.read()).binding;
-        await this.coordinator.exclusive(binding.bindingId, async () => {
-            await this.operations.recover();
-            if ((await this.store.read()).binding.state === 'active') await this.recoverApply();
+        await this.exclusive(binding.bindingId, async sync => {
+            await sync.operations.recover();
+            if ((await sync.store.read()).binding.state === 'active') await sync.recoverApply();
         });
     }
     private async recoverApply(): Promise<void> {
@@ -129,13 +140,13 @@ export class FileSync {
     }
     async cancel(): Promise<void> {
         const binding = (await this.store.read()).binding;
-        await this.coordinator.exclusive(binding.bindingId, async () => {
-            await this.operations.cancel();
-            const state = await this.store.read();
+        await this.exclusive(binding.bindingId, async sync => {
+            await sync.operations.cancel();
+            const state = await sync.store.read();
             if (state.activePlanId) {
-                const stored = await this.local.load(state.activePlanId);
-                if (stored) { stored.phase = 'abandoned'; await this.local.save(stored); }
-                await this.store.update(s => ({ ...s, activePlanId: undefined }));
+                const stored = await sync.local.load(state.activePlanId);
+                if (stored) { stored.phase = 'abandoned'; await sync.local.save(stored); }
+                await sync.store.update(s => ({ ...s, activePlanId: undefined }));
             }
         });
     }
@@ -186,14 +197,14 @@ export class FileSync {
     }
     async mergeText(id: string, paths: string[]): Promise<StoredFilePlan> {
         const b = (await this.store.read()).binding;
-        return this.coordinator.exclusive(b.bindingId, async () => {
-            const stored = await this.local.load(id); assertSync(stored?.phase === 'prepared', 'PLAN_INACTIVE');
-            const state = await this.store.read(); assertBinding(stored.bindingToken, state.binding);
+        return this.exclusive(b.bindingId, async sync => {
+            const stored = await sync.local.load(id); assertSync(stored?.phase === 'prepared', 'PLAN_INACTIVE');
+            const state = await sync.store.read(); assertBinding(stored.bindingToken, state.binding);
             assertSync(state.binding.direction === 'both', 'TEXT_MERGE_REQUIRES_BIDIRECTIONAL');
-            assertSync(stored.scopeToken === canonical(this.scope), 'PLAN_SCOPE_CHANGED');
-            const merged = structuredClone(stored); merged.id = this.newId();
-            for (const path of paths) await this.mergePath(merged, path);
-            await this.local.save(merged); return merged;
+                assertSync(stored.scopeToken === canonical(sync.scope), 'PLAN_SCOPE_CHANGED');
+            const merged = structuredClone(stored); merged.id = sync.newId();
+            for (const path of paths) await sync.mergePath(merged, path);
+            await sync.local.save(merged); return merged;
         });
     }
     private async mergePath(stored: StoredFilePlan, path: string): Promise<void> {

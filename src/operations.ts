@@ -1,20 +1,26 @@
 import type { Binding, Command, CommandRemote, Coordinator, Receipt, StateStore } from './contracts';
 import { assertSync, decimal, nextDecimal, SyncError } from './errors';
+import { scopedStore } from './coordination';
 
 export class OperationManager {
     constructor(private readonly store: StateStore, private readonly remote: CommandRemote,
         private readonly coordinator: Coordinator, private readonly newId: () => string) {}
+    private exclusive<T>(key: string, action: (operation: OperationManager) => Promise<T>): Promise<T> {
+        return this.coordinator.exclusive(key, guard => action(guard
+            ? new OperationManager(scopedStore(this.store, guard), this.remote, this.coordinator, this.newId)
+            : this));
+    }
     async execute(target: string, payload: Record<string, unknown>, operationId = this.newId()): Promise<Receipt> {
         const state = await this.store.read();
-        return this.coordinator.exclusive(sequenceKey(state.binding), async () => {
-            await this.recoverUnlocked();
-            const allocated = await this.store.update(current => allocate(current, target, payload, operationId));
-            return this.send(allocated.pending!.command);
+        return this.exclusive(sequenceKey(state.binding), async operation => {
+            await operation.recoverUnlocked();
+            const allocated = await operation.store.update(current => allocate(current, target, payload, operationId));
+            return operation.send(allocated.pending!.command);
         });
     }
     async recover(): Promise<void> {
         const state = await this.store.read();
-        await this.coordinator.exclusive(sequenceKey(state.binding), () => this.recoverUnlocked());
+        await this.exclusive(sequenceKey(state.binding), operation => operation.recoverUnlocked());
     }
     private async recoverUnlocked(): Promise<void> {
         const { pending } = await this.store.read();
@@ -34,8 +40,8 @@ export class OperationManager {
     }
     async acknowledgeExpiredReconciliation(): Promise<void> {
         const state = await this.store.read();
-        await this.coordinator.exclusive(sequenceKey(state.binding), async () => {
-            await this.store.update(s => {
+        await this.exclusive(sequenceKey(state.binding), async operation => {
+            await operation.store.update(s => {
                 assertSync(s.pending?.terminalExpired, 'RECONCILIATION_REQUIRED');
                 return { ...s, history: [...s.history, s.pending], pending: undefined };
             });
@@ -43,9 +49,9 @@ export class OperationManager {
     }
     async cancel(): Promise<void> {
         const state = await this.store.read();
-        await this.coordinator.exclusive(sequenceKey(state.binding), async () => {
-            const pending = (await this.store.read()).pending;
-            if (pending) await this.finish(pending.command, await this.remote.cancel(pending.command));
+        await this.exclusive(sequenceKey(state.binding), async operation => {
+            const pending = (await operation.store.read()).pending;
+            if (pending) await operation.finish(pending.command, await operation.remote.cancel(pending.command));
         });
     }
     private async send(command: Command): Promise<Receipt> {

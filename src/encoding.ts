@@ -1,3 +1,4 @@
+import { portableSHA256 } from './sha256';
 import { assertSync, decimal, validPath } from './errors';
 import type { FilesManifest, FileEntry } from './contracts';
 
@@ -37,6 +38,7 @@ export function encodeManifest(manifest: FilesManifest): Uint8Array<ArrayBuffer>
     return new TextEncoder().encode(canonical({ ...manifest, entries }));
 }
 export async function sha256(bytes: Uint8Array): Promise<string> {
+    if (!globalThis.crypto?.subtle) return portableSHA256(bytes);
     const result = await globalThis.crypto.subtle.digest('SHA-256', new Uint8Array(bytes));
     return Array.from(new Uint8Array(result), byte => byte.toString(16).padStart(2, '0')).join('');
 }

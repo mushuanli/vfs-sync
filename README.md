@@ -43,8 +43,15 @@ ordinary file read/write cannot substitute for those guarantees.
 and requires reconciliation when terminal receipts expire. Cloud publication and
 local application remain separate recoverable boundaries.
 
-The runtime must provide Web Crypto (`crypto.subtle`), `TextEncoder`, `TextDecoder`
-and `structuredClone`. Browser applications require a secure context for Web Crypto.
+The runtime must provide `TextEncoder`, `TextDecoder` and `structuredClone`.
+SHA-256 uses Web Crypto when available and an equivalent portable implementation
+when `crypto.subtle` is absent. `randomId()` uses `randomUUID` or secure
+`getRandomValues`; it never falls back to `Math.random`.
+
+Coordinators may supply a `CoordinationGuard`. In that case both local ports must
+implement `scoped(guard)` and verify ownership inside their storage transactions.
+Scoped instances keep nested guards without mutable ambient context; stale tasks
+must not write receipts, plans, files or baselines after lease takeover.
 No DOM or native host modules are imported by the implementation.
 
 Source exports are used for workspace development. `pnpm pack` replaces them

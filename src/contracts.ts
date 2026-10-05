@@ -33,11 +33,13 @@ export interface SyncState {
     ackError?: { code: string };
     ackPending?: { cursor: string; scopeRevision: string };
 }
+export interface CoordinationGuard { check(): Promise<void> }
 export interface StateStore {
+    scoped?(guard: CoordinationGuard): StateStore;
     read(): Promise<SyncState>;
     update(change: (current: SyncState) => SyncState): Promise<SyncState>;
 }
-export interface Coordinator { exclusive<T>(key: string, action: () => Promise<T>): Promise<T> }
+export interface Coordinator { exclusive<T>(key: string, action: (guard?: CoordinationGuard) => Promise<T>): Promise<T> }
 export interface CommandRemote {
     execute(command: Command): Promise<Receipt>;
     operation(replicaId: string, seq: string): Promise<Receipt>;
