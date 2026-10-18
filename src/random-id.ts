@@ -3,7 +3,9 @@ import { assertSync } from './errors';
 /** Secure bytes remain available on HTTP origins where randomUUID is not exposed. */
 export function randomId(): string {
     const crypto = globalThis.crypto;
-    if (typeof crypto?.randomUUID === 'function') return crypto.randomUUID();
+    if (typeof crypto?.randomUUID === 'function') {
+        try {return crypto.randomUUID();} catch { /* Fall back to secure bytes. */ }
+    }
     assertSync(typeof crypto?.getRandomValues === 'function', 'SECURE_RANDOM_UNAVAILABLE');
     const bytes = crypto.getRandomValues(new Uint8Array(16));
     bytes[6] = (bytes[6] & 15) | 64; bytes[8] = (bytes[8] & 63) | 128;

@@ -26,3 +26,8 @@ it('requires transaction fencing when a coordinator supplies a guard', async () 
     await expect(new OperationManager(store, remote, coordinator, randomId).execute('publish', {})).rejects.toThrow('COORDINATION_FENCING_UNAVAILABLE');
     expect(remote.execute).not.toHaveBeenCalled();
 });
+
+it('uses secure bytes when the native UUID method exists but throws', () => {
+    vi.stubGlobal('crypto', {getRandomValues: webcrypto.getRandomValues.bind(webcrypto), randomUUID: () => {throw new Error('UUID unavailable');}});
+    expect(randomId()).toMatch(/^[a-f0-9]{8}-[a-f0-9]{4}-4[a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}$/);
+});
